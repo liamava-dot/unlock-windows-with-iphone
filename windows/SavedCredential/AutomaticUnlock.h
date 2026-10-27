@@ -13,11 +13,12 @@ inline constexpr wchar_t kAutomaticUnlockKey[] = L"SOFTWARE\\UnlockWindowsWithIP
 inline constexpr wchar_t kAutomaticUnlockValue[] = L"AutomaticUnlockAtLockScreen";
 
 enum class AutomaticUnlockEvent {
-    lock, reset, displayOff, displayOn, suspend, backgroundResume, userResume
+    lock, reset, displayOff, displayOn, suspend, backgroundResume, userResume,
+    lidClosed, lidOpened
 };
 
 // Service callbacks and IPC share one wake ticket. Lock notifications may arrive
-// after display-off or resume; only reset/consumption discards a pending wake.
+// after display-off or resume. Closing the lid also revokes in-flight tickets.
 class AutomaticUnlockState {
 public:
     void observe(AutomaticUnlockEvent event) {
@@ -30,7 +31,7 @@ public:
                 next |= locked;
                 break;
             case AutomaticUnlockEvent::reset:
-                next &= suspended;
+                next &= ~(locked | displayOff | sleepPending | wakePending);
                 break;
             case AutomaticUnlockEvent::displayOff:
                 next = (next | displayOff) & ~wakePending;
@@ -53,12 +54,25 @@ public:
                     next = (next | wakePending) & ~(sleepPending | displayOff);
                 }
                 break;
+            case AutomaticUnlockEvent::lidClosed:
+                next = ((next | lidClosed) & ~wakePending) + lidEpochStep;
+                break;
+            case AutomaticUnlockEvent::lidOpened:
+                next &= ~lidClosed;
+                break;
             }
         } while (!state_.compare_exchange_weak(current, next));
     }
 
     bool eligible(bool enabled, bool consoleLocked) const {
         return eligibleState(state_.load(), enabled, consoleLocked);
+    }
+
+    unsigned lidEpoch() const { return state_.load() / lidEpochStep; }
+
+    bool acceptsLidEpoch(unsigned epoch) const {
+        const auto state = state_.load();
+        return !(state & lidClosed) && state / lidEpochStep == epoch;
     }
 
     bool consume(bool automatic, bool enabled, bool consoleLocked) {
@@ -75,10 +89,10 @@ public:
 
 private:
     static constexpr unsigned locked = 1u, suspended = 2u, displayOff = 4u,
-        sleepPending = 8u, wakePending = 16u;
+        sleepPending = 8u, wakePending = 16u, lidClosed = 32u, lidEpochStep = 64u;
     static bool eligibleState(unsigned state, bool enabled, bool consoleLocked) {
         return enabled && consoleLocked && (state & locked) &&
-            !(state & suspended) && (state & wakePending);
+            !(state & (suspended | lidClosed)) && (state & wakePending);
     }
     static_assert(std::atomic<unsigned>::is_always_lock_free);
     std::atomic<unsigned> state_{0};

@@ -1,5 +1,5 @@
 <!-- Created by Rui MA on 26 Sep 2026 -->
-<!-- Modified by Liam on 22 Oct 2026 -->
+<!-- Modified by Liam on 27 Oct 2026 -->
 
 # Security
 
@@ -11,6 +11,8 @@
 - SYSTEM, administrator or kernel compromise is outside this protection boundary. Plaintext under the application's control is cleared where practical; removing the saved copy does not guarantee erasure from backups or SSD history.
 
 ## Presence authorization
+
+On laptops, automatic verification requires a known open lid. Closing it revokes pending automatic requests and grants before credential release; reopening cannot revive a revoked request. Manual Unlock is unaffected. Devices without a lid retain the existing wake behavior.
 
 By default the user explicitly clicks **Unlock** on the PC. An administrator may enable automatic verification when the user wakes the PC from observed sleep, or its screen turns off and on around an existing user's session lock. Locking alone (including Win+L) and background resume alone do not arm an attempt. Each sleep/display wake allows one attempt; delayed lock notifications retain the wake ticket, while session unlock, logon, logoff or disconnect clears it. The phone needs no fresh Face ID, Touch ID, tap or app interaction. **An unattended PC can unlock when someone wakes it with the authorized phone nearby.** Keep this mode off on shared or security-sensitive systems.
 

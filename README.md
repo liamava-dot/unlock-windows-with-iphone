@@ -1,5 +1,5 @@
 <!-- Created by Rui MA on 26 Sep 2026 -->
-<!-- Modified by Liam on 22 Oct 2026 -->
+<!-- Modified by Liam on 27 Oct 2026 -->
 > [!WARNING]
 > **Developer technical preview**
 >
@@ -95,6 +95,7 @@ Windows distribution is a single `windows/dist/UnlockWithIPhone_<version>_<archi
 The Status page offers **Automatically unlock** as its third settings card, disabled by default and requiring administrator UAC approval. With this option turned on, the Credential Provider can start one fresh iPhone check when the user wakes the PC from observed sleep, or its screen turns off and on around a session lock. Lock, display and resume notifications need not arrive in a fixed order. Background resume alone cannot enable an attempt. Existing one-time native credential submission and Windows password/PIN alternatives are preserved.
 
 - Locking alone, including **Win + L**, does not trigger automatic unlock. After the screen turns off and wakes again, automatic unlock is allowed if the trusted iPhone is nearby. Manual **Unlock** remains available.
+- On laptops, the lid must be open. Closing it cancels pending automatic verification; moving a mouse while the lid stays closed cannot authorize unlock. PCs without a lid keep the same wake behavior.
 - Attempts are single-use for the current sleep/display wake. Failure does not cause repeated Bluetooth retries on the same activation. Duplicate resume/display-on notifications do not allow another attempt.
 - Windows may initially show its lock-screen cover before presenting LogonUI. A screen-wake event is not a guarantee LogonUI is loaded or that the cover automatically dismisses.
 - Initial sign-in after a restart, signed-out sessions and remote sessions remain ineligible. Real Windows hardware and Bluetooth validation are still required.

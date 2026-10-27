@@ -1,5 +1,5 @@
 // Created by Rui MA on 30 Sep 2026
-// Modified by Liam on 22 Oct 2026
+// Modified by Liam on 27 Oct 2026
 
 #include <initguid.h>
 #include "SavedCredentialIpc.h"
@@ -21,6 +21,7 @@
 #include <ShlGuid.h>
 #include <propsys.h>
 #include <propkey.h>
+#include <powrprof.h>
 
 #include <array>
 #include <algorithm>
@@ -352,6 +353,7 @@ struct BleTask final {
     ULONGLONG deadline = 0;
     BindingChange change;
     bool binding = false;
+    std::optional<unsigned> automaticLidEpoch;
     std::atomic<bool> cancelled{false};
     std::shared_ptr<unlock_windows::system_ble::Session> connection;
     std::shared_ptr<unlock_windows::system_ble::RssiSampler> sampler;
@@ -503,7 +505,7 @@ public:
                     return response;
                 }
                 change.candidate.threshold = unlock_windows::system_ble::kDefaultThreshold;
-                queueTask(provisioning_->identity, console, std::move(change), true);
+                queueTask(provisioning_->identity, console, std::move(change), true, std::nullopt);
                 if (!encodeAuthenticationStatus(managementStatus_, response.payload)) fail("binding task status encoding failed");
                 response.result = Result::success;
                 return response;
@@ -551,8 +553,9 @@ public:
                 // Consume before BLE starts; failure never loops or extends the deadline.
                 // Manual verification also consumes this screen activation to avoid
                 // an automatic retry after an explicit Unlock attempt.
+                const auto lidEpoch = automatic ? std::optional{gAutomaticUnlock.lidEpoch()} : std::nullopt;
                 if (!gAutomaticUnlock.consume(automatic, automaticUnlockEnabled(), console.locked)) return response;
-                queueTask(identity, console, {original, original.record}, false);
+                queueTask(identity, console, {original, original.record}, false, lidEpoch);
                 if (!encodeAuthenticationStatus(authenticationStatus_, response.payload)) fail("authentication status encoding failed");
                 response.result = Result::success;
                 return response;
@@ -693,7 +696,8 @@ public:
                     latest.session == console.session && latest.sid == console.sid &&
                     latest.logonId.LowPart == task_->logonId.LowPart && latest.logonId.HighPart == task_->logonId.HighPart &&
                     grant_->consoleGeneration == gConsoleGeneration.load() && !task_->cancelled &&
-                    task_->change.expected == bindingSummary();
+                    task_->change.expected == bindingSummary() &&
+                    (!task_->automaticLidEpoch || gAutomaticUnlock.acceptsLidEpoch(*task_->automaticLidEpoch));
                 const auto evidence = unlock_windows::system_ble::presenceEvidence(*task_->connection, *task_->sampler);
                 const auto claimedNonce = grant_->nonce;
                 UnlockContext context{identity, console.session, console.logonId, task_->change.candidate,
@@ -784,6 +788,8 @@ private:
     }
 
     AuthenticationFailure unlockFailure() const {
+        if (task_->automaticLidEpoch && !gAutomaticUnlock.acceptsLidEpoch(*task_->automaticLidEpoch))
+            return AuthenticationFailure::cancelled;
         return unlock_windows::system_ble::presenceFailure(
             unlock_windows::system_ble::presenceEvidence(*task_->connection, *task_->sampler),
             task_->started, GetTickCount64(), task_->deadline, task_->change.candidate.threshold);
@@ -816,6 +822,10 @@ private:
 
     void expireRequest(const Console& console) {
         if (!task_ || task_->cancelled) return;
+        if (task_->automaticLidEpoch && !gAutomaticUnlock.acceptsLidEpoch(*task_->automaticLidEpoch)) {
+            rejectTask(AuthenticationFailure::cancelled, "Automatic verification invalidated by lid closure");
+            return;
+        }
         if (task_->cancelEvent.value && WaitForSingleObject(task_->cancelEvent.value, 0) != WAIT_TIMEOUT) {
             rejectTask(AuthenticationFailure::cancelled);
             return;
@@ -832,8 +842,10 @@ private:
         if (reason != AuthenticationFailure::none) rejectTask(reason);
     }
 
-    void queueTask(const Identity& identity, const Console& console, BindingChange change, bool binding) {
+    void queueTask(const Identity& identity, const Console& console, BindingChange change, bool binding,
+        std::optional<unsigned> automaticLidEpoch) {
         auto task = std::make_shared<BleTask>();
+        task->automaticLidEpoch = automaticLidEpoch;
         if (binding) {
             task->cancelEvent = openCancellation(change.cancelEvent);
         }
@@ -991,6 +1003,7 @@ private:
                     const auto connectionGeneration = retainedGeneration;
                     connection->beginRequest(task->started, [task, connectionGeneration] {
                         return !task->cancelled && !gStopping && !gSuspended &&
+                            (!task->automaticLidEpoch || gAutomaticUnlock.acceptsLidEpoch(*task->automaticLidEpoch)) &&
                             connectionGeneration == gConnectionGeneration.load() &&
                             (!task->cancelEvent.value || WaitForSingleObject(task->cancelEvent.value, 0) == WAIT_TIMEOUT) &&
                             task->consoleGeneration == gConsoleGeneration.load() &&
@@ -1197,6 +1210,18 @@ DWORD WINAPI serviceControl(const DWORD control, const DWORD eventType, void* ev
     if (control == SERVICE_CONTROL_POWEREVENT) {
         if (eventType == PBT_POWERSETTINGCHANGE) {
             const auto* setting = static_cast<const POWERBROADCAST_SETTING*>(eventData);
+            if (setting && IsEqualGUID(setting->PowerSetting, GUID_LIDSWITCH_STATE_CHANGE) &&
+                setting->DataLength == sizeof(DWORD)) {
+                DWORD lid = 0;
+                std::memcpy(&lid, setting->Data, sizeof(lid));
+                if (lid == 0) gAutomaticUnlock.observe(AutomaticUnlockEvent::lidClosed);
+                else if (lid == 1) gAutomaticUnlock.observe(AutomaticUnlockEvent::lidOpened);
+                else {
+                    gAutomaticUnlock.observe(AutomaticUnlockEvent::lidClosed);
+                    OutputDebugStringW(L"[SavedCredential] invalid lid state; automatic unlock blocked\n");
+                }
+                return NO_ERROR;
+            }
             if (setting != nullptr &&
                 IsEqualGUID(setting->PowerSetting, GUID_CONSOLE_DISPLAY_STATE) &&
                 setting->DataLength == sizeof(DWORD)) {
@@ -1304,8 +1329,17 @@ void WINAPI serviceMain(DWORD, LPWSTR*) {
     gStatusHandle = RegisterServiceCtrlHandlerExW(kServiceName, serviceControl, nullptr);
     if (gStatusHandle == nullptr) return;
     reportServiceState(SERVICE_START_PENDING);
+    HPOWERNOTIFY lidNotification = nullptr;
     try {
         {
+            SYSTEM_POWER_CAPABILITIES capabilities{};
+            if (!GetPwrCapabilities(&capabilities)) fail("Query lid presence failed");
+            // A laptop must report its initial lid state before auto-unlock is
+            // allowed. Desktops without a lid retain the existing wake behavior.
+            if (capabilities.LidPresent) gAutomaticUnlock.observe(AutomaticUnlockEvent::lidClosed);
+            lidNotification = RegisterPowerSettingNotification(
+                gStatusHandle, &GUID_LIDSWITCH_STATE_CHANGE, DEVICE_NOTIFY_SERVICE_HANDLE);
+            if (!lidNotification) fail("Register lid state notification failed");
             // Services receive console monitor power events even when the user
             // session is locked. Normal screen wake does not require S3 sleep.
             const HPOWERNOTIFY displayNotification = RegisterPowerSettingNotification(
@@ -1339,6 +1373,8 @@ void WINAPI serviceMain(DWORD, LPWSTR*) {
         OutputDebugStringW(winrt::to_message().c_str());
         reportServiceState(SERVICE_STOPPED, ERROR_SERVICE_SPECIFIC_ERROR);
     }
+    if (lidNotification && !UnregisterPowerSettingNotification(lidNotification))
+        OutputDebugStringW(L"[SavedCredential] lid notification unregister failed\n");
 }
 
 } // namespace
