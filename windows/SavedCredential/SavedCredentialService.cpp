@@ -365,7 +365,10 @@ public:
         if (worker_.joinable()) worker_.join();
     }
 
-    void notifyStateChange() noexcept { wake_.notify_one(); }
+    void notifyStateChange() noexcept {
+        stateChanged_ = true;
+        wake_.notify_one();
+    }
 
     Packet process(const HANDLE pipe, Packet& request) {
         std::lock_guard lock(mutex_);
@@ -1022,7 +1025,9 @@ private:
                         if (error != backgroundError) { report("Preparation unavailable: " + error); backgroundError = error; }
                     }
                     std::unique_lock lock(mutex_);
-                    wake_.wait_for(lock, std::chrono::seconds(1), [&] { return stopping_ || gStopping || task_; });
+                    wake_.wait_for(lock, std::chrono::seconds(1), [&] {
+                        return stopping_ || gStopping || task_ || stateChanged_.exchange(false);
+                    });
                     continue;
                 }
                 std::shared_ptr<unlock_windows::system_ble::Session> connection;
@@ -1236,6 +1241,7 @@ private:
     bool removing_ = false;
     bool stopping_ = false;
     std::condition_variable wake_;
+    std::atomic_bool stateChanged_{false};
     std::thread worker_;
 };
 
@@ -1266,10 +1272,6 @@ DWORD WINAPI serviceControl(const DWORD control, const DWORD eventType, void* ev
         return NO_ERROR;
     }
     if (control == SERVICE_CONTROL_POWEREVENT) {
-        {
-            std::lock_guard lock(gHandlerMutex);
-            if (gHandler) gHandler->notifyStateChange();
-        }
         if (eventType == PBT_POWERSETTINGCHANGE) {
             const auto* setting = static_cast<const POWERBROADCAST_SETTING*>(eventData);
             if (setting && IsEqualGUID(setting->PowerSetting, GUID_LIDSWITCH_STATE_CHANGE) &&
@@ -1281,6 +1283,10 @@ DWORD WINAPI serviceControl(const DWORD control, const DWORD eventType, void* ev
                 else {
                     gAutomaticUnlock.observe(AutomaticUnlockEvent::lidClosed);
                     OutputDebugStringW(L"[SavedCredential] invalid lid state; automatic unlock blocked\n");
+                }
+                {
+                    std::lock_guard lock(gHandlerMutex);
+                    if (gHandler) gHandler->notifyStateChange();
                 }
                 return NO_ERROR;
             }
@@ -1294,6 +1300,10 @@ DWORD WINAPI serviceControl(const DWORD control, const DWORD eventType, void* ev
                 } else if (state == PowerMonitorOn) {
                     gAutomaticUnlock.observe(AutomaticUnlockEvent::displayOn);
                 }
+            }
+            {
+                std::lock_guard lock(gHandlerMutex);
+                if (gHandler) gHandler->notifyStateChange();
             }
             return NO_ERROR;
         }
@@ -1315,6 +1325,10 @@ DWORD WINAPI serviceControl(const DWORD control, const DWORD eventType, void* ev
             }
             gAutomaticUnlock.observe(eventType == PBT_APMRESUMESUSPEND
                 ? AutomaticUnlockEvent::userResume : AutomaticUnlockEvent::backgroundResume);
+        }
+        {
+            std::lock_guard lock(gHandlerMutex);
+            if (gHandler) gHandler->notifyStateChange();
         }
         return NO_ERROR;
     }
