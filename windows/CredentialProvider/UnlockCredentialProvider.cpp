@@ -6,7 +6,6 @@
 #include "CredentialSerialization.h"
 #include "SavedCredentialIpc.h"
 #include "../SavedCredential/AutomaticUnlock.h"
-#include "../SavedCredential/AutomaticUnlock.h"
 #include "../Setup/SetupIdentity.h"
 #include "../Resources/resource.h"
 #include <algorithm>

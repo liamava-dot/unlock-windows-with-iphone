@@ -121,7 +121,7 @@ private:
     std::shared_ptr<BindingSession> session_;
     Windows::Foundation::Collections::IObservableVector<UnlockDesktop::PairedDevice> devices_{single_threaded_observable_vector<UnlockDesktop::PairedDevice>()};
     UnlockDesktop::PairedDevice selected_{nullptr};
-    com_ptr<unlock_windows::desktop_app::ViewModelCommand> bind_, remove_, save_, settings_;
+    com_ptr<unlock_windows::desktop_app::ViewModelCommand> bind_, remove_, save_, settings_, automaticUnlock_;
     std::function<void(bool)> refreshSnapshot_;
     unlock_windows::desktop_app::MainWindow::ReportError reportError_;
     std::wstring saveError_;

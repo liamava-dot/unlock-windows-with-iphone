@@ -337,6 +337,8 @@ void testPasswordSerialization() {
         SecureZeroMemory(secret.data(), secret.size() * sizeof(wchar_t));
     }
     SecureZeroMemory(password, sizeof(password));
+}
+
 void testAutomaticUnlockEvents() {
     using unlock_windows::saved_credential::AutomaticUnlockState;
     using Event = unlock_windows::saved_credential::AutomaticUnlockEvent;
