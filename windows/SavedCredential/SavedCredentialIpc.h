@@ -1,4 +1,5 @@
 // Created by Rui MA on 30 Sep 2026
+// Modified by Liam on 21 Oct 2026
 
 #pragma once
 
@@ -41,7 +42,7 @@ enum class Operation : std::uint16_t {
     credentialSummary = 19,
     bindingStatus = 20, beginBinding = 21, removeBinding = 22, saveThreshold = 23,
     cancelVerification = 24, bindingTaskStatus = 25, serviceDiagnostics = 26,
-    reportUnlockResult = 27, lastUnlockStatus = 28,
+    reportUnlockResult = 27, lastUnlockStatus = 28, beginAutomaticVerification = 29,
 };
 
 inline constexpr bool isKnownOperation(const std::uint16_t value) noexcept {
@@ -54,6 +55,7 @@ inline constexpr bool isKnownOperation(const std::uint16_t value) noexcept {
     case Operation::claimCredential:
     case Operation::clearForRemoval:
     case Operation::beginVerification:
+    case Operation::beginAutomaticVerification:
     case Operation::takeAutoSubmitOffer:
     case Operation::verificationStatus:
     case Operation::unlockEligibility:
@@ -88,6 +90,7 @@ inline constexpr bool requiresLogonUi(Operation operation) noexcept {
     case Operation::captureProvisioningIdentity:
     case Operation::claimCredential:
     case Operation::beginVerification:
+    case Operation::beginAutomaticVerification:
     case Operation::verificationStatus:
     case Operation::unlockEligibility:
     case Operation::takeAutoSubmitOffer:

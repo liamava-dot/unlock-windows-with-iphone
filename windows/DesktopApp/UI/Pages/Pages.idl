@@ -31,6 +31,10 @@ namespace UnlockDesktop
         String BindingMessage{ get; };
         String BindLabel{ get; };
         String BindAutomationName{ get; };
+        String AutomaticUnlockDescription{ get; };
+        String AutomaticUnlockLabel{ get; };
+        String AutomaticUnlockAutomationName{ get; };
+        Boolean AutomaticUnlockEnabledForUi{ get; };
         Double RangeValue{ get; };
         Windows.Foundation.Collections.IObservableVector<PairedDevice> Devices{ get; };
         PairedDevice SelectedDevice;
@@ -38,6 +42,7 @@ namespace UnlockDesktop
         Microsoft.UI.Xaml.Input.ICommand RemoveCommand{ get; };
         Microsoft.UI.Xaml.Input.ICommand SaveRangeCommand{ get; };
         Microsoft.UI.Xaml.Input.ICommand OpenSettingsCommand{ get; };
+        Microsoft.UI.Xaml.Input.ICommand AutomaticUnlockCommand{ get; };
     }
 
     [default_interface]

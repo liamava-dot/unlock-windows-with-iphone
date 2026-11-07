@@ -57,6 +57,23 @@
                     </Grid>
                 </Grid>
             </Border>
+            <Border Style="{StaticResource SettingsCard}" Visibility="{x:Bind ViewModel.BoundVisibility, Mode=OneWay}">
+                <Grid>
+                    <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                    <FontIcon Glyph="&#xE8F2;" Style="{StaticResource CardIcon}"/>
+                    <StackPanel Grid.Column="1" Spacing="4" VerticalAlignment="Center" Margin="0,0,16,0">
+                        <TextBlock Text="Automatic unlock" Style="{StaticResource CardText}"/>
+                        <TextBlock Text="{x:Bind ViewModel.AutomaticUnlockDescription, Mode=OneWay}"
+                                   FontSize="12" TextWrapping="Wrap" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+                    </StackPanel>
+                    <Button Grid.Column="2" VerticalAlignment="Center"
+                            Content="{x:Bind ViewModel.AutomaticUnlockLabel, Mode=OneWay}"
+                            Command="{x:Bind ViewModel.AutomaticUnlockCommand, Mode=OneWay}"
+                            IsEnabled="{x:Bind ViewModel.AutomaticUnlockEnabledForUi, Mode=OneWay}"
+                            AutomationProperties.Name="{x:Bind ViewModel.AutomaticUnlockAutomationName, Mode=OneWay}"
+                            ToolTipService.ToolTip="Administrator approval required"/>
+                </Grid>
+            </Border>
             <Border Style="{StaticResource SettingsCard}" Visibility="{x:Bind ViewModel.BoundVisibility, Mode=OneWay}"
                     SizeChanged="RemovalCardSizeChanged">
                 <Grid x:Name="RemovalLayout">

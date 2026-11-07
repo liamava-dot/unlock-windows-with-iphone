@@ -1,4 +1,5 @@
 <!-- Created by Rui MA on 26 Sep 2026 -->
+<!-- Modified by Liam on 27 Oct 2026 -->
 
 # Protocol and architecture
 
@@ -58,6 +59,12 @@ There is one saved-credential pipe. No phone pipe, signature submission, public-
 Connection, reads, writes and reply acknowledgment use cancellable Overlapped I/O. Each connected client has one absolute 2000 ms transfer deadline; fragments and ACK do not renew it. Client `call` shares one deadline across the entire call. Service STOP signals an event, cancels pending I/O and drains completion before releasing its resources. Transport errors identify the stage and Win32 error; failed replies never restore consumed authorization.
 
 `lastUnlockStatus` returns only optional success time/RSSI to the verified unlocked target user. History is not persisted or used for authentication. Service restart, account/session change, binding replacement/removal and password removal clear it; threshold changes retain it. New requests retire pending results. Reporting failure is diagnostic and never changes the native Windows result.
+
+## Opt-in wake-based automatic verification
+
+The service registers `GUID_LIDSWITCH_STATE_CHANGE`. If `GetPwrCapabilities` reports a lid, automatic requests remain blocked until Windows reports it open. Each close revokes the current automatic-request generation, checked during BLE verification, offer creation and credential claiming. Session resets retain lid state; manual requests have no automatic lid generation. Reopening does not restore an old request.
+
+Administrator-approved Status control stores a machine-wide registry DWORD under `HKLM\SOFTWARE\UnlockWindowsWithIPhone\AutomaticUnlockAtLockScreen`. Only value 1 opts in; missing/invalid data is off, and the old `AutomaticUnlockOnResume` setting is not promoted automatically. The service requires an existing user's session lock (not initial sign-in) and either user resume (`PBT_APMRESUMESUSPEND`) after observed suspend, or a display-off/on transition through `GUID_CONSOLE_DISPLAY_STATE`. Sleep wake tickets survive delayed lock notifications; display-off observed before lock is retained until display-on. Locking alone (including Win+L), initial display-on and background resume alone cannot arm a ticket. Session unlock, logon, logoff or disconnect clears it. An explicit manual Unlock consumes the current activation, including its pending resume/display notifications. The service checks locked console/account, binding, credential and request identity, atomically consumes the ticket before BLE work and never automatically retries failures within the same activation. Duplicate user-resume/display-on notifications do not create another ticket. The Credential Provider watcher initiates verification when the sign-in UI is active and reuses the existing one-time offer and `CredentialsChanged` native submission. PIN/password fallback remains. Someone waking the locked PC with the trusted phone nearby may gain access. Real sleep/display-wake acceptance is pending.
 
 ## Limits and acceptance
 

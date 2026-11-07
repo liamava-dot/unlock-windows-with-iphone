@@ -1,9 +1,12 @@
 // Created by Rui MA on 27 Sep 2026
+// Modified by Liam on 22 Oct 2026
 
 #include <initguid.h>
 #include "UnlockCredentialProvider.h"
 #include "CredentialSerialization.h"
 #include "SavedCredentialIpc.h"
+#include "../SavedCredential/AutomaticUnlock.h"
+#include "../SavedCredential/AutomaticUnlock.h"
 #include "../Setup/SetupIdentity.h"
 #include "../Resources/resource.h"
 #include <algorithm>
@@ -118,6 +121,7 @@ struct ApprovalWatch final {
     void run() noexcept {
         using namespace unlock_windows::saved_credential;
         HRESULT previousError = S_OK;
+        ULONGLONG nextAutomaticCheck = 0;
         try {
             while (WaitForSingleObject(stop, 0) == WAIT_TIMEOUT) {
                 const auto sampleStarted = GetTickCount64();
@@ -173,6 +177,32 @@ struct ApprovalWatch final {
                     latest = L"Unlock with iPhone is temporarily unavailable. Use your PIN or password.";
                 }
                 if (FAILED(status)) latest = L"Unlock with iPhone is temporarily unavailable. Use your PIN or password.";
+                // The LocalSystem service permits an opt-in attempt after
+                // user sleep-resume or an observed display-off/on transition.
+                // Activating the sign-in screen or locking alone cannot arm it.
+                const auto now = GetTickCount64();
+                if (latestStatus &&
+                    (latestStatus->stage == AuthenticationStage::idle ||
+                     latestStatus->stage == AuthenticationStage::failed ||
+                     // A native sign-in leaves the previous request consumed.
+                     // The service's new display-wake ticket controls the next attempt.
+                     latestStatus->stage == AuthenticationStage::consumed ||
+                     latestStatus->stage == AuthenticationStage::completed) &&
+                    now >= nextAutomaticCheck && automaticUnlockEnabled()) {
+                    // Keep polling light even when no wake ticket is available.
+                    nextAutomaticCheck = now + 1500;
+                    SensitiveBytes startRequest;
+                    Packet startReply;
+                    if (encodeIdentity(identity, startRequest) &&
+                        call(Operation::beginAutomaticVerification, std::move(startRequest),
+                            startReply, 250) && startReply.result == Result::success) {
+                        AuthenticationStatus started;
+                        if (decodeAuthenticationStatus(startReply.payload.value.data(),
+                                startReply.payload.value.size(), started) &&
+                            started.stage == AuthenticationStage::verifying)
+                            latestStatus = std::move(started);
+                    }
+                }
                 {
                     std::lock_guard lock(mutex);
                     failure = latest;

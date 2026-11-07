@@ -6,6 +6,7 @@
 #include "../../DesktopErrors.h"
 #include "../../../Enrollment/BindingClient.h"
 #include "../../../Enrollment/EnrollmentSession.h"
+#include "../../../SavedCredential/AutomaticUnlock.h"
 #include "../../../Bluetooth/SystemBleSession.h"
 #include <winrt/Windows.System.h>
 #include <map>
@@ -240,6 +241,8 @@ StatusViewModel::StatusViewModel() {
             model->binding_->state == system_ble::BindingState::bound && model->RangeDirty(); });
     settings_ = make_self<ViewModelCommand>([weak] { OpenSettings(weak); },
         [weak] { auto model = weak.get(); return model && model->BindingEnabled(); });
+    automaticUnlock_ = make_self<ViewModelCommand>([weak] { ChangeAutomaticUnlock(weak); },
+        [weak] { auto model = weak.get(); return model && model->AutomaticUnlockEnabledForUi(); });
 }
 hstring StatusViewModel::DeviceName() const {
     if (!snapshot_.binding) return L"Binding status unavailable";
@@ -267,6 +270,18 @@ bool StatusViewModel::BindingBusy() const { return session_ && session_->busy &&
 hstring StatusViewModel::BindingMessage() const { return session_ ? hstring{session_->status} : hstring{}; }
 hstring StatusViewModel::BindLabel() const { return BindingBusy() ? L"Binding\u2026" : L"Bind selected device"; }
 hstring StatusViewModel::BindAutomationName() const { return BindingBusy() ? L"Binding in progress" : L"Bind selected device"; }
+hstring StatusViewModel::AutomaticUnlockDescription() const {
+    return automaticUnlockEnabled()
+        ? L"On: one fresh iPhone check after sleep/resume or a screen-off/on cycle while this session is locked. The laptop lid must be open. Someone with your paired iPhone nearby may unlock this PC without confirming on the phone."
+        : L"Off (default). Turn on to allow one iPhone check after a qualifying wake while this PC is locked. Administrator approval is required.";
+}
+hstring StatusViewModel::AutomaticUnlockLabel() const { return automaticUnlockEnabled() ? L"Turn off" : L"Turn on"; }
+hstring StatusViewModel::AutomaticUnlockAutomationName() const {
+    return automaticUnlockEnabled()
+        ? L"Turn off automatic unlock; administrator approval required"
+        : L"Turn on automatic unlock; administrator approval required";
+}
+bool StatusViewModel::AutomaticUnlockEnabledForUi() const { return !stopped_ && !changingAutomaticUnlock_; }
 bool StatusViewModel::Busy() const { return saving_ || (session_ && session_->busy); }
 void StatusViewModel::SelectedDevice(const UnlockDesktop::PairedDevice& device) {
     if (rendering_) return;
@@ -331,8 +346,9 @@ void StatusViewModel::RangeSchedulingFailed() {
 void StatusViewModel::Publish() {
     Notify({L"DeviceName", L"LastUnlock", L"Error", L"ErrorOpen", L"BoundVisibility", L"BindingVisibility",
         L"EmptyVisibility", L"ProgressVisibility", L"BindingEnabled", L"DevicesEnabled", L"ManagementEnabled",
-        L"BindingBusy", L"BindingMessage", L"BindLabel", L"BindAutomationName"});
-    bind_->Invalidate(); remove_->Invalidate(); save_->Invalidate(); settings_->Invalidate();
+        L"BindingBusy", L"BindingMessage", L"BindLabel", L"BindAutomationName", L"AutomaticUnlockDescription",
+        L"AutomaticUnlockLabel", L"AutomaticUnlockAutomationName", L"AutomaticUnlockEnabledForUi"});
+    bind_->Invalidate(); remove_->Invalidate(); save_->Invalidate(); settings_->Invalidate(); automaticUnlock_->Invalidate();
 }
 fire_and_forget StatusViewModel::SaveRange(weak_ref<StatusViewModel> weak) {
     auto model = weak.get();
@@ -377,6 +393,32 @@ fire_and_forget StatusViewModel::OpenSettings(weak_ref<StatusViewModel> weak) {
             if (!co_await Windows::System::Launcher::LaunchUriAsync(Windows::Foundation::Uri{L"ms-settings:bluetooth"}))
                 throw hresult_error(E_FAIL, L"Windows Bluetooth settings could not be opened");
         } catch (...) { session->message(formatException(std::current_exception())); }
+    }
+}
+fire_and_forget StatusViewModel::ChangeAutomaticUnlock(weak_ref<StatusViewModel> weak) {
+    auto model = weak.get();
+    if (!model || model->stopped_ || model->changingAutomaticUnlock_) co_return;
+    const bool enable = !automaticUnlockEnabled();
+    model->changingAutomaticUnlock_ = true;
+    model->Publish();
+    apartment_context foreground;
+    model = nullptr;
+    std::wstring failure;
+    co_await resume_background();
+    try {
+        const DWORD code = enrollment::launchHelper(enable
+            ? L"--auto-unlock-setting on" : L"--auto-unlock-setting off");
+        if (code != ERROR_SUCCESS)
+            failure = L"Administrator approval or registry update failed (" + std::to_wstring(code) + L").";
+    } catch (...) {
+        failure = formatException(std::current_exception());
+    }
+    co_await foreground;
+    if (model = weak.get(); model && !model->stopped_) {
+        model->changingAutomaticUnlock_ = false;
+        model->saveError_ = failure;
+        if (!failure.empty() && model->reportError_) model->reportError_(failure);
+        model->Publish();
     }
 }
 void StatusViewModel::Stop() {

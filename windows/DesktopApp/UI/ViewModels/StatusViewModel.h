@@ -52,6 +52,16 @@ struct StatusViewModel : StatusViewModelT<StatusViewModel>, unlock_windows::desk
     hstring BindLabel() const;
     /// Return the existing binding button automation name.
     hstring BindAutomationName() const;
+    /// Describe the opt-in automatic iPhone verification policy and its security trade-off.
+    hstring AutomaticUnlockDescription() const;
+    /// Return the action that toggles the administrator-controlled automatic unlock setting.
+    hstring AutomaticUnlockLabel() const;
+    /// Expose the UAC requirement to assistive technology.
+    hstring AutomaticUnlockAutomationName() const;
+    /// Disable the setting while an elevation request is running or the model is stopping.
+    bool AutomaticUnlockEnabledForUi() const;
+    /// Expose the administrator-approved automatic unlock setting action.
+    Microsoft::UI::Xaml::Input::ICommand AutomaticUnlockCommand() const { return automaticUnlock_.as<Microsoft::UI::Xaml::Input::ICommand>(); }
     /// Return the currently paired device choices.
     Windows::Foundation::Collections::IObservableVector<UnlockDesktop::PairedDevice> Devices() const { return devices_; }
     /// Return the selected endpoint projection.
@@ -104,6 +114,8 @@ private:
     static fire_and_forget SaveRange(weak_ref<StatusViewModel> weak);
     /// Launch the existing Bluetooth settings URI and report launch failures.
     static fire_and_forget OpenSettings(weak_ref<StatusViewModel> weak);
+    /// Request UAC approval before changing the machine-wide automatic unlock policy.
+    static fire_and_forget ChangeAutomaticUnlock(weak_ref<StatusViewModel> weak);
     unlock_windows::desktop_app::DesktopSnapshot snapshot_;
     std::optional<unlock_windows::saved_credential::BindingSummary> binding_;
     std::shared_ptr<BindingSession> session_;
@@ -116,7 +128,7 @@ private:
     handle cancellation_;
     double range_ = -unlock_windows::system_ble::kDefaultThreshold;
     bool saving_ = false, stopped_ = false, visible_ = false, success_ = false, successVisible_ = false;
-    bool rendering_ = false, resetSession_ = false;
+    bool rendering_ = false, resetSession_ = false, changingAutomaticUnlock_ = false;
 };
 }
 namespace winrt::UnlockDesktop::factory_implementation {
