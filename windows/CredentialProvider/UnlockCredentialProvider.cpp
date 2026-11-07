@@ -109,6 +109,8 @@ struct ApprovalWatch final {
     std::wstring failure;
     ULONGLONG sampledAt = 0;
     std::optional<unlock_windows::saved_credential::AuthenticationStatus> authenticationStatus;
+    std::optional<unlock_windows::saved_credential::AuthenticationStatus> automaticStarted;
+    ULONGLONG automaticStartedAt = 0;
     std::thread worker;
 
     ~ApprovalWatch() {
@@ -120,7 +122,6 @@ struct ApprovalWatch final {
     void run() noexcept {
         using namespace unlock_windows::saved_credential;
         HRESULT previousError = S_OK;
-        ULONGLONG nextAutomaticCheck = 0;
         try {
             while (WaitForSingleObject(stop, 0) == WAIT_TIMEOUT) {
                 const auto sampleStarted = GetTickCount64();
@@ -160,6 +161,7 @@ struct ApprovalWatch final {
                 Packet statusReply;
                 std::wstring latest;
                 std::optional<AuthenticationStatus> latestStatus;
+                std::optional<AuthenticationStatus> startedAutomatically;
                 if (!encodeIdentity(identity, statusRequest)) {
                     latest = L"Unlock with iPhone is temporarily unavailable. Use your PIN or password.";
                     logAutoSubmitError(L"phone status identity encoding", E_INVALIDARG);
@@ -179,7 +181,6 @@ struct ApprovalWatch final {
                 // The LocalSystem service permits an opt-in attempt after
                 // user sleep-resume or an observed display-off/on transition.
                 // Activating the sign-in screen or locking alone cannot arm it.
-                const auto now = GetTickCount64();
                 if (latestStatus &&
                     (latestStatus->stage == AuthenticationStage::idle ||
                      latestStatus->stage == AuthenticationStage::failed ||
@@ -187,9 +188,9 @@ struct ApprovalWatch final {
                      // The service's new display-wake ticket controls the next attempt.
                      latestStatus->stage == AuthenticationStage::consumed ||
                      latestStatus->stage == AuthenticationStage::completed) &&
-                    now >= nextAutomaticCheck && automaticUnlockEnabled()) {
-                    // Keep polling light even when no wake ticket is available.
-                    nextAutomaticCheck = now + 1500;
+                    automaticUnlockEnabled()) {
+                    // Reuse the existing 500 ms status poll so a new wake ticket
+                    // does not wait for a separate automatic-unlock timer.
                     SensitiveBytes startRequest;
                     Packet startReply;
                     if (encodeIdentity(identity, startRequest) &&
@@ -198,8 +199,10 @@ struct ApprovalWatch final {
                         AuthenticationStatus started;
                         if (decodeAuthenticationStatus(startReply.payload.value.data(),
                                 startReply.payload.value.size(), started) &&
-                            started.stage == AuthenticationStage::verifying)
+                            started.stage == AuthenticationStage::verifying) {
+                            startedAutomatically = started;
                             latestStatus = std::move(started);
+                        }
                     }
                 }
                 {
@@ -207,6 +210,10 @@ struct ApprovalWatch final {
                     failure = latest;
                     sampledAt = sampleStarted;
                     authenticationStatus = std::move(latestStatus);
+                    if (startedAutomatically) {
+                        automaticStarted = std::move(startedAutomatically);
+                        automaticStartedAt = sampleStarted;
+                    }
                 }
                 if (!PostMessageW(window, kApprovalMessage, generation, 0)) {
                     logAutoSubmitError(L"phone status PostMessage", HRESULT_FROM_WIN32(GetLastError()));
@@ -754,6 +761,20 @@ public:
 
     bool awaitingApproval() const noexcept {
         return uiState_ == UiState::waiting;
+    }
+
+    void trackAutomaticRequest(const unlock_windows::saved_credential::AuthenticationStatus& status,
+                               ULONGLONG startedAt) {
+        using namespace unlock_windows::saved_credential;
+        // Only an acknowledged automatic start may enter the waiting UI.
+        // A delayed worker message must not replace a newer manual attempt.
+        if (uiState_ == UiState::submitting || startedAt <= authenticationStartedAt_ ||
+            status.stage != AuthenticationStage::verifying || status.requestId.empty()) return;
+        authenticationRequestId_ = status.requestId;
+        authenticationStartedAt_ = startedAt;
+        errorText_.clear();
+        uiState_ = UiState::waiting;
+        refreshFields();
     }
 
     void updateAuthenticationStatus(const std::optional<unlock_windows::saved_credential::AuthenticationStatus>& status,
@@ -1541,13 +1562,18 @@ private:
         std::wstring failure;
         ULONGLONG sampledAt = 0;
         std::optional<unlock_windows::saved_credential::AuthenticationStatus> authenticationStatus;
+        std::optional<unlock_windows::saved_credential::AuthenticationStatus> automaticStarted;
+        ULONGLONG automaticStartedAt = 0;
         {
             std::lock_guard lock(watch_->mutex);
             offer = std::exchange(watch_->offer, std::nullopt);
             failure = watch_->failure;
             sampledAt = watch_->sampledAt;
             authenticationStatus = watch_->authenticationStatus;
+            automaticStarted = std::exchange(watch_->automaticStarted, std::nullopt);
+            automaticStartedAt = watch_->automaticStartedAt;
         }
+        if (automaticStarted) credential_->trackAutomaticRequest(*automaticStarted, automaticStartedAt);
         credential_->updateAuthenticationStatus(authenticationStatus, failure, sampledAt);
         if (!offer || !credential_->awaitingApproval() || GetTickCount64() >= offer->expiresAt ||
             WTSGetActiveConsoleSessionId() != consoleSessionId_) return;

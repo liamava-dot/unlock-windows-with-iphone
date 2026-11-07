@@ -707,7 +707,7 @@ public:
                     latest.logonId.LowPart == task_->logonId.LowPart && latest.logonId.HighPart == task_->logonId.HighPart &&
                     grant_->consoleGeneration == gConsoleGeneration.load() && !task_->cancelled &&
                     task_->change.expected == bindingSummary() &&
-                    (!task_->automaticLidEpoch || gAutomaticUnlock.acceptsLidEpoch(*task_->automaticLidEpoch));
+                    (!task_->automaticLidEpoch || gAutomaticUnlock.acceptsLidEpoch(*task_->automaticLidEpoch, automaticUnlockEnabled()));
                 const auto evidence = unlock_windows::system_ble::presenceEvidence(*task_->connection, *task_->sampler);
                 const auto claimedNonce = grant_->nonce;
                 UnlockContext context{identity, console.session, console.logonId, task_->change.candidate,
@@ -798,7 +798,7 @@ private:
     }
 
     AuthenticationFailure unlockFailure() const {
-        if (task_->automaticLidEpoch && !gAutomaticUnlock.acceptsLidEpoch(*task_->automaticLidEpoch))
+        if (task_->automaticLidEpoch && !gAutomaticUnlock.acceptsLidEpoch(*task_->automaticLidEpoch, automaticUnlockEnabled()))
             return AuthenticationFailure::cancelled;
         return unlock_windows::system_ble::presenceFailure(
             unlock_windows::system_ble::presenceEvidence(*task_->connection, *task_->sampler),
@@ -832,8 +832,8 @@ private:
 
     void expireRequest(const Console& console) {
         if (!task_ || task_->cancelled) return;
-        if (task_->automaticLidEpoch && !gAutomaticUnlock.acceptsLidEpoch(*task_->automaticLidEpoch)) {
-            rejectTask(AuthenticationFailure::cancelled, "Automatic verification invalidated by lid closure");
+        if (task_->automaticLidEpoch && !gAutomaticUnlock.acceptsLidEpoch(*task_->automaticLidEpoch, automaticUnlockEnabled())) {
+            rejectTask(AuthenticationFailure::cancelled, "Automatic verification disabled or invalidated by lid closure");
             return;
         }
         if (task_->cancelEvent.value && WaitForSingleObject(task_->cancelEvent.value, 0) != WAIT_TIMEOUT) {
@@ -945,8 +945,12 @@ private:
                                     std::wstring targetSid;
                                     winrt::check_hresult(unlock::components::readSetupTargetSid(targetSid));
                                     if (console->sid == targetSid && binding.record.accountSid == targetSid && stored->sid == targetSid) {
-                                        if (sameIdentity(*stored, consoleIdentity(*console))) desired = binding.record;
-                                        else fail("BLE connection target online identity differs from saved identity");
+                                        if (sameIdentity(*stored, consoleIdentity(*console))) {
+                                            desired = binding.record;
+                                            // A service restart can miss the original WTS lock event.
+                                            // Observing the current lock never creates a wake ticket.
+                                            if (console->locked) gAutomaticUnlock.observe(AutomaticUnlockEvent::lock);
+                                        } else fail("BLE connection target online identity differs from saved identity");
                                     }
                                 }
                             }
@@ -1050,7 +1054,7 @@ private:
                     const auto connectionGeneration = retainedGeneration;
                     connection->beginRequest(task->started, [task, connectionGeneration] {
                         return !task->cancelled && !gStopping && !gSuspended &&
-                            (!task->automaticLidEpoch || gAutomaticUnlock.acceptsLidEpoch(*task->automaticLidEpoch)) &&
+                            (!task->automaticLidEpoch || gAutomaticUnlock.acceptsLidEpoch(*task->automaticLidEpoch, automaticUnlockEnabled())) &&
                             connectionGeneration == gConnectionGeneration.load() &&
                             (!task->cancelEvent.value || WaitForSingleObject(task->cancelEvent.value, 0) == WAIT_TIMEOUT) &&
                             task->consoleGeneration == gConsoleGeneration.load() &&
@@ -1146,6 +1150,7 @@ private:
                             sampler->stop();
                             if (retainedSampler == sampler) retainedSampler.reset();
                         }
+                        std::lock_guard lock(mutex_);
                         task->sampler.reset();
                     } catch (...) {
                         const auto error = winrt::to_string(winrt::to_message());
@@ -1170,8 +1175,7 @@ private:
                         closeConnection();
                     }
                     if (retained && (preparation.failed() || !retained->healthy())) {
-                        retained->close();
-                        retained.reset();
+                        closeConnection();
                         preparation.fail();
                     }
                 }

@@ -366,6 +366,10 @@ void testAutomaticUnlockEvents() {
     check({Event::displayOff, Event::displayOn, Event::lock}, false,
         "unlocked display wake must not arm a later Win+L");
     check({Event::lock, Event::displayOff, Event::displayOn}, true, "locked display wake must qualify");
+    check({Event::lock, Event::lock}, false,
+        "repeated observations of an already locked console cannot create a wake ticket");
+    check({Event::lock, Event::displayOff, Event::lock, Event::displayOn}, true,
+        "observing the current locked console must preserve a pending display wake");
     check({Event::displayOff, Event::lock, Event::displayOn}, true,
         "lock after display-off must preserve the off state");
     check({Event::lock, Event::suspend, Event::userResume}, true,
@@ -398,16 +402,18 @@ void testAutomaticUnlockEvents() {
     inFlight.observe(Event::displayOn);
     const auto originalEpoch = inFlight.lidEpoch();
     require(inFlight.consume(true, true, true), "open-lid attempt must start");
-    require(inFlight.acceptsLidEpoch(originalEpoch), "started attempt remains valid with lid open");
+    require(inFlight.acceptsLidEpoch(originalEpoch, true), "started attempt remains valid with lid open");
+    require(!inFlight.acceptsLidEpoch(originalEpoch, false),
+        "disabling automatic unlock must reject an in-flight attempt");
     inFlight.observe(Event::lidClosed);
-    require(!inFlight.acceptsLidEpoch(originalEpoch), "closing lid must revoke an in-flight attempt");
+    require(!inFlight.acceptsLidEpoch(originalEpoch, true), "closing lid must revoke an in-flight attempt");
     inFlight.observe(Event::lidOpened);
-    require(!inFlight.acceptsLidEpoch(originalEpoch), "quick reopen must not revive a revoked attempt");
+    require(!inFlight.acceptsLidEpoch(originalEpoch, true), "quick reopen must not revive a revoked attempt");
     require(!inFlight.eligible(true, true), "reopening alone must not restore the consumed ticket");
     inFlight.observe(Event::displayOff);
     inFlight.observe(Event::displayOn);
     const auto freshEpoch = inFlight.lidEpoch();
-    require(inFlight.consume(true, true, true) && inFlight.acceptsLidEpoch(freshEpoch),
+    require(inFlight.consume(true, true, true) && inFlight.acceptsLidEpoch(freshEpoch, true),
         "fresh wake after reopening must allow a new attempt");
     inFlight.observe(Event::lidClosed);
     require(inFlight.consume(false, true, true), "manual Unlock must remain available with lid closed");

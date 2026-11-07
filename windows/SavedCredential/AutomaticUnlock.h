@@ -70,9 +70,9 @@ public:
 
     unsigned lidEpoch() const { return state_.load() / lidEpochStep; }
 
-    bool acceptsLidEpoch(unsigned epoch) const {
+    bool acceptsLidEpoch(unsigned epoch, bool enabled) const {
         const auto state = state_.load();
-        return !(state & lidClosed) && state / lidEpochStep == epoch;
+        return enabled && !(state & lidClosed) && state / lidEpochStep == epoch;
     }
 
     bool consume(bool automatic, bool enabled, bool consoleLocked) {
