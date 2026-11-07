@@ -1057,7 +1057,11 @@ private:
                     }
                     else {
                         if (!retainedSampler || !retainedSampler->healthy()) {
-                            if (retainedSampler) retainedSampler->stop();
+                            if (retainedSampler) {
+                                try { retainedSampler->stop(); }
+                                catch (...) { OutputDebugStringW(L"Unhealthy RSSI watcher cleanup failed\n"); }
+                                retainedSampler.reset();
+                            }
                             retainedSampler = std::make_shared<unlock_windows::system_ble::RssiSampler>(report);
                             // The one-shot path arms the watcher after Session::connect()
                             // has resolved the current endpoint/address/type.

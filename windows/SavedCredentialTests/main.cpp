@@ -771,6 +771,10 @@ void testRssiSamples() {
     warmed.endRequest();
     require(warmed.evidence(target).failure == Failure::cancelled && warmed.evidence(target).sampledAt == 0,
         "ending a request clears evidence while leaving the scanner reusable");
+    warmed.beginRequest(target, 10'600);
+    require(warmed.evidence(target).sampledAt == 0 &&
+        warmed.record(42, BluetoothAddressType::Random, 10'501, -55, 10'601) == detail::RssiSampleResult::beforeRequest,
+        "a previous request's accepted sample cannot authorize a later request");
 }
 
 struct PresenceSessionFixture {
@@ -817,12 +821,14 @@ struct PresenceSamplerFixture {
     PresenceSessionFixture& session;
     mutable std::optional<unlock_windows::system_ble::detail::RssiSamples> samples;
     std::function<void()> beforeEvidence, afterEvidence;
-    bool recordSamples = true;
+    bool recordSamples = true, seedSampleAtRequestStart = false;
     int rssi = unlock_windows::system_ble::kDefaultThreshold;
 
     void beginRequest(unlock_windows::system_ble::ConnectionTarget target, std::uint64_t started,
         std::function<void(const std::string&)> = {}) {
         samples.emplace(std::move(target), started);
+        if (seedSampleAtRequestStart)
+            samples->record(session.current.address, session.current.addressType, session.now, rssi, session.now);
     }
     void updateTarget(unlock_windows::system_ble::ConnectionTarget target) {
         samples->updateTarget(std::move(target), session.now);
@@ -861,7 +867,7 @@ void testPresenceEvidenceInterleaving() {
         for (unsigned scenario = 0; scenario < 8; ++scenario) {
             PresenceSessionFixture session;
             PresenceSamplerFixture sampler{session};
-            sampler.start(session.current, session.started);
+            sampler.beginRequest(session.current, session.started);
             const auto invalidate = [&] {
                 switch (scenario) {
                 case 0: ++session.current.revision; session.proof.failure = Failure::connectionLost; break;
@@ -891,6 +897,21 @@ void testPresenceEvidenceInterleaving() {
 
 void testPresenceRenewal() {
     using namespace unlock_windows::system_ble;
+    {
+        PresenceSessionFixture session;
+        PresenceSamplerFixture sampler{session};
+        sampler.seedSampleAtRequestStart = true;
+        session.onVerify = [&] {
+            ++session.current.revision;
+            session.proof.revision = session.current.revision;
+            session.proof.communicationAt = session.now;
+        };
+        unsigned waits = 0;
+        detail::verifyUnlockPresence(session, sampler, session.started, session.deadline, kDefaultThreshold, {},
+            [&] { return session.now; }, [&] { ++waits; session.now += 20; });
+        require(waits == 0 && sampler.samples->evidence(session.current).sampledAt == session.now,
+            "a fresh RSSI sample collected during protected GATT verification survives a revision-only change");
+    }
     for (unsigned scenario = 0; scenario < 3; ++scenario) {
         PresenceSessionFixture session;
         PresenceSamplerFixture sampler{session};

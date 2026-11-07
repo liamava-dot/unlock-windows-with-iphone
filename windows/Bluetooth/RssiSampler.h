@@ -3,6 +3,9 @@
 #pragma once
 
 #include "SystemBleSession.h"
+#include <functional>
+#include <string>
+#include <utility>
 
 namespace unlock_windows::system_ble {
 struct RssiEvidence final {
