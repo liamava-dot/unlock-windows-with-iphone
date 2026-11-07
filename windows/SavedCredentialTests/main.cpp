@@ -840,6 +840,7 @@ struct PresenceSamplerFixture {
         if (afterEvidence) afterEvidence();
         return result;
     }
+    std::string diagnostics() const { return "fixture RSSI diagnostics"; }
 };
 
 void testCommunicationStateAndFreshness() {

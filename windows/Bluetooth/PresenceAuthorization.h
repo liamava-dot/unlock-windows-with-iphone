@@ -68,7 +68,7 @@ void verifyUnlockPresence(SessionType& session, SamplerType& sampler, std::uint6
             log("Fresh RSSI=" + std::to_string(proof.proximity.rssi) + " dBm below threshold=" + std::to_string(threshold));
         if (proof.proximity.failure != Failure::none ||
             (failure != Failure::rssiUnavailable && failure != Failure::evidenceExpired)) {
-            log(sampler.diagnostics());
+            if constexpr (requires { sampler.diagnostics(); }) log(sampler.diagnostics());
             throw VerificationError(failure, "Unlock presence evidence rejected");
         }
         if (rssiFailure(proof.proximity, proof.target, started, now, threshold) == Failure::none &&
