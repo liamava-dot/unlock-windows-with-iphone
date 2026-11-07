@@ -729,15 +729,19 @@ void testRssiSamples() {
     require(samples.evidence(target).rssi == -50, "a delayed sample cannot replace newer evidence");
     auto changed = target;
     ++changed.revision;
-    require(samples.evidence(changed).sampledAt == 0, "reading against a changed connection rejects old samples before target update");
+    require(samples.evidence(changed).sampledAt == 0, "reading against a changed connection rejects evidence until target synchronization");
     samples.updateTarget(changed, 10'100);
+    require(samples.evidence(changed).sampledAt == 10'000 && samples.evidence(changed).rssi == -50,
+        "a fresh sample for the same endpoint/address/type survives a GATT-only revision change");
     samples.record(42, BluetoothAddressType::Random, 10'000, -50, 10'101);
-    require(samples.evidence(changed).sampledAt == 0, "a previous connection's queued advertisement cannot refill cleared evidence");
+    require(samples.evidence(changed).rssi == -50, "a delayed duplicate cannot replace the same fresh sample");
     samples.record(42, BluetoothAddressType::Random, 10'100, -55, 10'101);
-    require(samples.evidence(changed).rssi == -55, "fresh evidence can be collected after a target revision change");
+    require(samples.evidence(changed).rssi == -55, "new samples remain eligible after a GATT revision change");
     changed.address = 43;
     samples.updateTarget(changed, 10'200);
     require(samples.evidence(changed).sampledAt == 0, "address rotation clears the old sample");
+    samples.record(42, BluetoothAddressType::Random, 10'201, -45, 10'202);
+    require(samples.evidence(changed).sampledAt == 0, "queued advertisements from the previous address cannot refill evidence");
     samples.fail();
     require(samples.evidence(changed).failure == Failure::rssiUnavailable &&
         communicationFailure(communication, 9'000, 10'201) == Failure::none,
@@ -752,6 +756,21 @@ void testRssiSamples() {
     next.record(43, BluetoothAddressType::Random, 10'301, -40, 10'302);
     next.updateTarget(changed, 10'303);
     require(next.evidence(changed).sampledAt == 10'301, "an unchanged target preserves a current sample");
+
+    detail::RssiSamples warmed(target, 0);
+    warmed.endRequest();
+    require(warmed.record(42, BluetoothAddressType::Random, 10'400, -50, 10'401) == detail::RssiSampleResult::inactive,
+        "background advertisements are not request evidence");
+    warmed.beginRequest(target, 10'500);
+    require(warmed.record(42, BluetoothAddressType::Random, 10'499, -50, 10'501) == detail::RssiSampleResult::beforeRequest &&
+        warmed.evidence(target).sampledAt == 0,
+        "queued pre-request advertisements cannot cross the request boundary");
+    require(warmed.record(42, BluetoothAddressType::Random, 10'501, -55, 10'502) == detail::RssiSampleResult::accepted &&
+        warmed.evidence(target).sampledAt == 10'501,
+        "the warmed watcher can accept a fresh post-request advertisement immediately");
+    warmed.endRequest();
+    require(warmed.evidence(target).failure == Failure::cancelled && warmed.evidence(target).sampledAt == 0,
+        "ending a request clears evidence while leaving the scanner reusable");
 }
 
 struct PresenceSessionFixture {
@@ -784,8 +803,9 @@ struct PresenceSessionFixture {
         if (proof.failure != Failure::none)
             throw unlock_windows::system_ble::VerificationError(proof.failure, "Fixture invalidated");
     }
-    void verifyCommunication() {
+    void verifyCommunication(std::function<void(const unlock_windows::system_ble::ConnectionTarget&)> targetChanged = {}) {
         refresh();
+        if (targetChanged) targetChanged(current);
         if (onVerify) onVerify();
         const auto result = currentEvidence();
         if (result.failure != Failure::none)
@@ -800,7 +820,8 @@ struct PresenceSamplerFixture {
     bool recordSamples = true;
     int rssi = unlock_windows::system_ble::kDefaultThreshold;
 
-    void start(unlock_windows::system_ble::ConnectionTarget target, std::uint64_t started) {
+    void beginRequest(unlock_windows::system_ble::ConnectionTarget target, std::uint64_t started,
+        std::function<void(const std::string&)> = {}) {
         samples.emplace(std::move(target), started);
     }
     void updateTarget(unlock_windows::system_ble::ConnectionTarget target) {

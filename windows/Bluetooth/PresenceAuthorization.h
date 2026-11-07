@@ -48,8 +48,8 @@ void verifyUnlockPresence(SessionType& session, SamplerType& sampler, std::uint6
     const auto log = [&](const std::string& message) { if (report) report(message); };
     log("Verify unlock presence; threshold=" + std::to_string(threshold) + " dBm");
     session.connect();
-    sampler.start(session.target(), started);
-    session.verifyCommunication();
+    sampler.beginRequest(session.target(), started, report);
+    session.verifyCommunication([&sampler](const ConnectionTarget& target) { sampler.updateTarget(target); });
     bool waiting = false;
     for (;;) {
         session.refresh();
@@ -59,6 +59,7 @@ void verifyUnlockPresence(SessionType& session, SamplerType& sampler, std::uint6
         const auto failure = presenceFailure(proof, started, now, deadline, threshold);
         if (failure == Failure::none) {
             if (waiting) log("END waiting for request-fresh RSSI");
+            if constexpr (requires { sampler.diagnostics(); }) log(sampler.diagnostics());
             log("Evidence RSSI=" + std::to_string(proof.proximity.rssi) + " dBm; rssiAgeMs=" +
                 std::to_string(now - proof.proximity.sampledAt) + "; failure=0");
             return;
@@ -71,10 +72,14 @@ void verifyUnlockPresence(SessionType& session, SamplerType& sampler, std::uint6
         if (rssiFailure(proof.proximity, proof.target, started, now, threshold) == Failure::none &&
             communicationFailure(proof.communication, started, now) == Failure::evidenceExpired) {
             log("RSSI available; renew expired protected communication evidence");
-            session.verifyCommunication();
+            session.verifyCommunication([&sampler](const ConnectionTarget& target) { sampler.updateTarget(target); });
             continue;
         }
-        if (!waiting) { log("BEGIN waiting for request-fresh RSSI within original deadline"); waiting = true; }
+        if (!waiting) {
+            log("BEGIN waiting for request-fresh RSSI within original deadline");
+            if constexpr (requires { sampler.diagnostics(); }) log(sampler.diagnostics());
+            waiting = true;
+        }
         wait();
     }
 }

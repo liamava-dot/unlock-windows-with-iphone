@@ -371,7 +371,7 @@ struct Session::State final : std::enable_shared_from_this<State> {
         report("Protected verification complete; request evidence stable");
     }
 
-    void verifyCommunication() {
+    void verifyCommunication(const std::function<void(const ConnectionTarget&)>& targetChanged) {
         check("BLE request start");
         if (!session) throw VerificationError(Failure::internalError, "Connect BLE before protected communication verification");
         if (device.ConnectionStatus() != BluetoothConnectionStatus::Connected || session.SessionStatus() != GattSessionStatus::Active) {
@@ -392,6 +392,9 @@ struct Session::State final : std::enable_shared_from_this<State> {
         for (;;) {
             check("service structure and protected verification preparation");
             discover();
+            // Synchronize RSSI identity as soon as the current GATT structure
+            // is known, rather than waiting for the entire protected exchange.
+            if (targetChanged) targetChanged(target());
             try { protectedCommunication(); }
             catch (const VerificationError& error) {
                 if (error.reason != Failure::protectedOperationFailed || !preparationChanged()) throw;
@@ -522,7 +525,9 @@ Session::~Session() {
     catch (...) { OutputDebugStringW(L"System BLE cleanup failed\n"); }
 }
 void Session::connect() { state_->check("BLE connection start"); state_->open(); }
-void Session::verifyCommunication() { state_->verifyCommunication(); }
+void Session::verifyCommunication(std::function<void(const ConnectionTarget&)> targetChanged) {
+    state_->verifyCommunication(targetChanged);
+}
 void Session::prepare(std::uint64_t started, std::function<bool()> valid) { state_->prepare(started, std::move(valid)); }
 void Session::beginRequest(std::uint64_t started, std::function<bool()> valid) {
     state_->beginRequest(started, std::move(valid));

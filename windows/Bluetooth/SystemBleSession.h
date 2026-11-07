@@ -80,7 +80,7 @@ public:
     void beginRequest(std::uint64_t started, std::function<bool()> valid);
     void endRequest();
     void connect();
-    void verifyCommunication();
+    void verifyCommunication(std::function<void(const ConnectionTarget&)> targetChanged = {});
     void refresh();
     void close();
     bool healthy() const;

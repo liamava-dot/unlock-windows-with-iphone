@@ -59,6 +59,9 @@ SERVICE_STATUS_HANDLE gStatusHandle = nullptr;
 SERVICE_STATUS gStatus{};
 HANDLE gPipeStopEvent = nullptr;
 void stopPipe();
+class Handler;
+std::mutex gHandlerMutex;
+Handler* gHandler = nullptr;
 
 void fail(const char* message) { throw std::runtime_error(message); }
 
@@ -348,12 +351,21 @@ void setText(SensitiveBytes& target, const std::string& value) {
 
 class Handler final {
 public:
-    Handler() : worker_([this] { workerMain(); }) {}
+    Handler() : worker_([this] { workerMain(); }) {
+        std::lock_guard lock(gHandlerMutex);
+        gHandler = this;
+    }
     ~Handler() {
+        {
+            std::lock_guard lock(gHandlerMutex);
+            gHandler = nullptr;
+        }
         { std::lock_guard lock(mutex_); stopping_ = true; if (task_) task_->cancelled = true; }
         wake_.notify_all();
         if (worker_.joinable()) worker_.join();
     }
+
+    void notifyStateChange() noexcept { wake_.notify_one(); }
 
     Packet process(const HANDLE pipe, Packet& request) {
         std::lock_guard lock(mutex_);
@@ -878,12 +890,18 @@ private:
             winrt::init_apartment(winrt::apartment_type::multi_threaded);
             struct Apartment final { ~Apartment() { winrt::uninit_apartment(); } } apartment;
             std::shared_ptr<unlock_windows::system_ble::Session> retained;
+            std::shared_ptr<unlock_windows::system_ble::RssiSampler> retainedSampler;
             std::optional<unlock_windows::system_ble::BindingRecord> retainedBinding;
             std::optional<Console> retainedConsole;
             ULONGLONG retainedGeneration = 0;
             unlock_windows::system_ble::PreparationState preparation;
             std::string backgroundError;
             const auto closeConnection = [&] {
+                if (retainedSampler) {
+                    try { retainedSampler->stop(); }
+                    catch (...) { OutputDebugStringW(L"RSSI background watcher cleanup failed\n"); }
+                    retainedSampler.reset();
+                }
                 if (retained) {
                     retained->close();
                     retained.reset();
@@ -968,6 +986,35 @@ private:
                             closeConnection();
                             preparation.fail();
                         }
+                        // Scan only while the configured Windows session is
+                        // locked. This warms the OS watcher before the user
+                        // requests unlock without scanning throughout normal use.
+                        if ((!console || !console->locked) && retainedSampler) {
+                            try { retainedSampler->stop(); }
+                            catch (...) { OutputDebugStringW(L"RSSI background watcher stop after unlock failed\n"); }
+                            retainedSampler.reset();
+                        }
+                        // Background advertisements never become authentication
+                        // evidence; each request arms a fresh timestamp boundary.
+                        if (retained && console && console->locked && !gSuspended &&
+                            (!retainedSampler || !retainedSampler->healthy()) &&
+                            preparation.ready(retained->healthy(), retained->revision())) {
+                            try {
+                                if (retainedSampler) retainedSampler->stop();
+                                retainedSampler = std::make_shared<unlock_windows::system_ble::RssiSampler>(report);
+                                retainedSampler->startBackground(retained->target());
+                            } catch (...) {
+                                const auto error = winrt::to_string(winrt::to_message());
+                                if (retainedSampler) {
+                                    try { retainedSampler->stop(); } catch (...) {}
+                                    retainedSampler.reset();
+                                }
+                                if (error != backgroundError) {
+                                    report("RSSI background watcher unavailable; request will start a one-shot watcher: " + error);
+                                    backgroundError = error;
+                                }
+                            }
+                        }
                     } catch (...) {
                         const auto error = winrt::to_string(winrt::to_message());
                         closeConnection();
@@ -1009,7 +1056,13 @@ private:
                         connection->verifyCommunication();
                     }
                     else {
-                        sampler = std::make_shared<unlock_windows::system_ble::RssiSampler>();
+                        if (!retainedSampler || !retainedSampler->healthy()) {
+                            if (retainedSampler) retainedSampler->stop();
+                            retainedSampler = std::make_shared<unlock_windows::system_ble::RssiSampler>(report);
+                            // The one-shot path arms the watcher after Session::connect()
+                            // has resolved the current endpoint/address/type.
+                        }
+                        sampler = retainedSampler;
                         unlock_windows::system_ble::verifyUnlockPresence(*connection, *sampler,
                             task->started, task->deadline, task->change.candidate.threshold, report);
                     }
@@ -1067,24 +1120,30 @@ private:
                     if (error.reason == AuthenticationFailure::associationInvalid || error.reason == AuthenticationFailure::bondRejected ||
                         error.reason == AuthenticationFailure::internalError) preparation.fail();
                     std::lock_guard lock(mutex_);
+                    if (sampler) appendDiagnostic(sampler->diagnostics());
                     if (!task->cancelled) rejectTask(error.reason, error.what());
                 } catch (...) {
                     const auto error = winrt::to_message();
                     OutputDebugStringW(error.c_str());
                     preparation.fail();
                     std::lock_guard lock(mutex_);
+                    if (sampler) appendDiagnostic(sampler->diagnostics());
                     if (!task->cancelled) rejectTask(task->binding ? AuthenticationFailure::storageFailed : AuthenticationFailure::internalError, winrt::to_string(error));
                 }
                 if (sampler) {
                     try {
-                        std::lock_guard lock(mutex_);
-                        sampler->stop();
+                        sampler->endRequest();
+                        if (!sampler->healthy()) {
+                            sampler->stop();
+                            if (retainedSampler == sampler) retainedSampler.reset();
+                        }
                         task->sampler.reset();
                     } catch (...) {
                         const auto error = winrt::to_string(winrt::to_message());
                         std::lock_guard lock(mutex_);
                         appendDiagnostic("RSSI request cleanup failed: " + error);
                         rejectTask(AuthenticationFailure::rssiUnavailable, error);
+                        if (retainedSampler == sampler) retainedSampler.reset();
                         task->sampler.reset();
                     }
                 }
@@ -1203,6 +1262,10 @@ DWORD WINAPI serviceControl(const DWORD control, const DWORD eventType, void* ev
         return NO_ERROR;
     }
     if (control == SERVICE_CONTROL_POWEREVENT) {
+        {
+            std::lock_guard lock(gHandlerMutex);
+            if (gHandler) gHandler->notifyStateChange();
+        }
         if (eventType == PBT_POWERSETTINGCHANGE) {
             const auto* setting = static_cast<const POWERBROADCAST_SETTING*>(eventData);
             if (setting && IsEqualGUID(setting->PowerSetting, GUID_LIDSWITCH_STATE_CHANGE) &&
@@ -1270,6 +1333,10 @@ DWORD WINAPI serviceControl(const DWORD control, const DWORD eventType, void* ev
                 ++gConnectionGeneration;
                 ++gUnlockHistoryGeneration;
             }
+        }
+        {
+            std::lock_guard lock(gHandlerMutex);
+            if (gHandler) gHandler->notifyStateChange();
         }
         return NO_ERROR;
     }
