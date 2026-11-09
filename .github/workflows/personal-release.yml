@@ -1,0 +1,113 @@
+name: Personal x64 Release
+
+on:
+  push:
+    branches: [liamava]
+    paths: [windows/ProductVersion.h, .github/workflows/personal-release.yml]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: personal-x64-release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    if: startsWith(github.event.head_commit.message, 'release:')
+    runs-on: windows-2022
+    permissions:
+      contents: write
+    defaults:
+      run:
+        working-directory: windows
+    env:
+      UNLOCK_TARGET_ARCH: x64
+      UNLOCK_VS_DEV_CMD: auto
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Determine release version
+        id: version
+        shell: pwsh
+        run: |
+          . .\WindowsBuild.ps1
+          $metadata = Get-ProductBuildMetadata -Architecture x64
+          "tag=v$($metadata.ReleaseVersion)" >> $env:GITHUB_OUTPUT
+          "version=$($metadata.Version)" >> $env:GITHUB_OUTPUT
+          "installer=$($metadata.SetupFile)" >> $env:GITHUB_OUTPUT
+
+      - name: Run all native Release tests
+        shell: cmd
+        run: |
+          if not exist "..\.tmp" mkdir "..\.tmp"
+          if errorlevel 1 exit /b %errorlevel%
+          set "TEMP=%CD%\..\.tmp"
+          set "TMP=%TEMP%"
+          powershell.exe -NoProfile -ExecutionPolicy Bypass -File WindowsBuild.ps1 -Prepare -OutputDirectory build
+          if errorlevel 1 exit /b %errorlevel%
+          powershell.exe -NoProfile -ExecutionPolicy Bypass -File WindowsBuild.ps1 -InvokeMSBuild "UnlockWindowsTests.proj" /t:Test /m:1 /nologo "/p:Configuration=Release" "/p:UnlockBuildDirectory=%CD%\build" "/p:BuildTesting=ON"
+          if errorlevel 1 exit /b %errorlevel%
+
+      - name: Build x64 Release installer
+        shell: cmd
+        run: |
+          set "TEMP=%CD%\..\.tmp"
+          set "TMP=%TEMP%"
+          powershell.exe -NoProfile -ExecutionPolicy Bypass -File WindowsBuild.ps1 -InvokeMSBuild "UnlockWindows.sln" /restore /m /nologo "/p:Configuration=Release" "/p:UnlockBuildDirectory=%CD%\build" "/p:BuildTesting=OFF"
+          if errorlevel 1 exit /b %errorlevel%
+
+      - name: Verify installer
+        shell: pwsh
+        env:
+          INSTALLER: ${{ steps.version.outputs.installer }}
+          PRODUCT_VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          . .\WindowsBuild.ps1
+          $installer = Join-Path dist $env:INSTALLER
+          $info = [Diagnostics.FileVersionInfo]::GetVersionInfo((Resolve-Path -LiteralPath $installer).Path)
+          if ($info.FileVersion -cne $env:PRODUCT_VERSION -or $info.ProductVersion -cne $env:PRODUCT_VERSION) {
+              throw 'Installer version mismatch.'
+          }
+          if ((Get-PortableExecutableArchitecture -Path $installer) -cne 'x64') {
+              throw 'Installer is not x64.'
+          }
+
+      - name: Upload verified installer
+        uses: actions/upload-artifact@v7
+        with:
+          name: personal-x64-${{ steps.version.outputs.tag }}
+          path: windows/dist/${{ steps.version.outputs.installer }}
+          if-no-files-found: error
+
+      - name: Tag and publish personal release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ steps.version.outputs.tag }}
+          INSTALLER: ${{ steps.version.outputs.installer }}
+          PRODUCT_VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          $tagRef = "refs/tags/$env:RELEASE_TAG"
+          gh api "repos/$env:GH_REPO/git/refs" --method POST -f "ref=$tagRef" -f "sha=$env:GITHUB_SHA"
+          if ($LASTEXITCODE -ne 0) { throw 'Could not create a new immutable release tag; no existing tag was changed.' }
+          @"
+          Personal x64 release $env:PRODUCT_VERSION from the liamava branch.
+
+          - Preserve opt-in automatic iPhone unlock and passive RSSI scanning.
+          - Reduce the Credential Provider wait between query rounds to 100 ms while verifying or approved; keep 500 ms idle waits.
+          - Keep request freshness, identity matching, cancellation and deadlines unchanged.
+          - Include passive/active scanning support in the separately built diagnostic source.
+
+          All four native Release test programs passed on x64. Installer version and PE architecture were verified. This workflow does not perform Bluetooth or native Windows unlock trials. ARM64 is not included in this personal release.
+
+          Commit: $env:GITHUB_SHA
+          Build: $env:GITHUB_SERVER_URL/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID
+          "@ | Set-Content -LiteralPath personal-release-notes.md -Encoding utf8
+          gh release create $env:RELEASE_TAG "dist/$env:INSTALLER" --verify-tag --draft --title "$env:RELEASE_TAG (x64)" --notes-file personal-release-notes.md
+          if ($LASTEXITCODE -ne 0) { throw 'Release creation or asset upload failed.' }
+          gh release edit $env:RELEASE_TAG --draft=false --latest
+          if ($LASTEXITCODE -ne 0) { throw 'Release publication failed.' }
