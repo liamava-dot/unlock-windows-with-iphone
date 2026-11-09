@@ -97,6 +97,7 @@ jobs:
           @"
           Personal x64 release $env:PRODUCT_VERSION from the liamava branch.
 
+          - Simplify the Automatic unlock descriptions for the on and off states.
           - Preserve opt-in automatic iPhone unlock and passive RSSI scanning.
           - Reduce the Credential Provider wait between query rounds to 100 ms while verifying or approved; keep 500 ms idle waits.
           - Keep request freshness, identity matching, cancellation and deadlines unchanged.
