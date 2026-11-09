@@ -66,6 +66,21 @@ jobs:
           powershell.exe -NoProfile -ExecutionPolicy Bypass -File WindowsBuild.ps1 -InvokeMSBuild "UnlockWindows.sln" /restore /m /nologo "/p:Configuration=Release" "/p:UnlockBuildDirectory=%CD%\build" "/p:BuildTesting=OFF"
           if errorlevel 1 exit /b %errorlevel%
 
+      - name: Build standalone RSSI comparison diagnostic
+        shell: cmd
+        run: |
+          set "TEMP=%CD%\..\.tmp"
+          set "TMP=%TEMP%"
+          powershell.exe -NoProfile -ExecutionPolicy Bypass -File WindowsBuild.ps1 -InvokeMSBuild "MSBuild\UnlockSystemBleDiagnostic.vcxproj" /restore /m /nologo "/p:Configuration=Release" "/p:UnlockBuildDirectory=%CD%\build"
+          if errorlevel 1 exit /b %errorlevel%
+
+      - name: Upload standalone RSSI comparison diagnostic
+        uses: actions/upload-artifact@v7
+        with:
+          name: RSSI-comparison-${{ matrix.architecture }}
+          path: windows/build/unlock_system_ble_diagnostic.exe
+          if-no-files-found: error
+
       - name: Determine snapshot artifact name
         id: snapshot
         shell: pwsh

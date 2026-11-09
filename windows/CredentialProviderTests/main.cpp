@@ -3,6 +3,7 @@
 
 #include "UnlockCredentialProvider.h"
 #include "../CredentialProvider/CredentialSerialization.h"
+#include "../CredentialProvider/ApprovalPolling.h"
 #include "../SavedCredential/SavedCredentialIpc.h"
 #include "../SavedCredential/AutomaticUnlock.h"
 #include "../ComponentFiles.h"
@@ -428,6 +429,15 @@ void testAutomaticUnlockEvents() {
 }
 
 void run() {
+    using unlock_windows::credential_provider::approvalPollInterval;
+    using unlock_windows::saved_credential::AuthenticationStage;
+    require(approvalPollInterval(AuthenticationStage::verifying) == 100,
+        "manual and automatic verification should use fast polling");
+    require(approvalPollInterval(AuthenticationStage::approved) == 100,
+        "approval between offer and status queries must keep fast polling until claim");
+    for (const auto stage : {AuthenticationStage::idle, AuthenticationStage::failed,
+        AuthenticationStage::consumed, AuthenticationStage::completed})
+        require(approvalPollInterval(stage) == 500, "inactive requests should return to idle polling");
     testAutomaticUnlockEvents();
     const auto comResult = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
     require(SUCCEEDED(comResult), "CoInitializeEx failed");

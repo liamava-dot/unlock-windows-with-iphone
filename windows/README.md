@@ -64,7 +64,27 @@ Use tray **Status… → Diagnostics**. Do not run a second build-tree tray alon
 
 ## Module index
 
-The system BLE diagnostic uses a separate `SystemBleDiagnostic` target and shared `Bluetooth` definitions. It is not installed or built with the product and cannot unlock Windows. After an explicitly requested diagnostic build, use `--list` to obtain paired BLE IDs; the temporary service accepts `--service "BLE-ENDPOINT-ID" [RSSI-threshold]`.
+The system BLE diagnostic uses a separate `SystemBleDiagnostic` target and shared `Bluetooth` definitions. It is not installed or built with the product and cannot unlock Windows. After an explicitly requested diagnostic build, use `--list` to obtain paired BLE IDs; the temporary service accepts `--service "BLE-ENDPOINT-ID" [RSSI-threshold] [--scan-mode passive|active]`. Omission selects passive scanning; the installed credential service also continues to use passive scanning.
+
+### RSSI scanning comparison
+
+Build the standalone diagnostic explicitly from the repository root (with the build prerequisites above):
+
+```powershell
+$env:UNLOCK_VS_DEV_CMD = 'auto'
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File windows/WindowsBuild.ps1 -InvokeMSBuild windows/MSBuild/UnlockSystemBleDiagnostic.vcxproj -TargetArchitecture x64 /restore /m /nologo /p:Configuration=Release
+```
+
+The diagnostic must run as the temporary LocalSystem service named `UnlockWindowsSystemBleDiagnostic`, not directly from an elevated console. Set its SCM ImagePath to one of these commands, replacing the executable and exact paired endpoint paths:
+
+```text
+"C:\path\unlock_system_ble_diagnostic.exe" --service "BLE-ENDPOINT-ID" -90 --scan-mode passive
+"C:\path\unlock_system_ble_diagnostic.exe" --service "BLE-ENDPOINT-ID" -90 --scan-mode active
+```
+
+Restart the stopped diagnostic service for each trial; each process runs one request after a 10-second preparation window in which to lock the PC and phone. Alternate passive/active runs, with at least 20 runs per mode, keeping distance, threshold, adapter, phone state and other Bluetooth applications unchanged. Do not request a product unlock during the diagnostic. Collect `SystemBleDiagnostic.log` beside the EXE. `SCAN comparison` identifies mode and request start, `RSSI stats` reports first callback/match/accepted times and rejection counts, and `SCAN result` reports elapsed time and pass/fail. Stopped or timed-out runs without a final result must be counted as interrupted, not dropped. Use the final SCM result to confirm completion. Compare median and p95 first-accepted and total times alongside failure/interruption counts.
+
+This is a one-shot scanning comparison, not a retained-watcher or actual Windows-unlock benchmark. An active-scanning improvement must also be confirmed with the product's retained connection/watcher before changing its default. Active scanning adds scan responses and does not guarantee faster first-advertisement reception. Request freshness, identity matching, cancellation and the 15-second deadline are identical in both modes.
 
 ```text
 windows/

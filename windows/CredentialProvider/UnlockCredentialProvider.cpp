@@ -4,6 +4,7 @@
 #include <initguid.h>
 #include "UnlockCredentialProvider.h"
 #include "CredentialSerialization.h"
+#include "ApprovalPolling.h"
 #include "SavedCredentialIpc.h"
 #include "../SavedCredential/AutomaticUnlock.h"
 #include "../Setup/SetupIdentity.h"
@@ -189,7 +190,7 @@ struct ApprovalWatch final {
                      latestStatus->stage == AuthenticationStage::consumed ||
                      latestStatus->stage == AuthenticationStage::completed) &&
                     automaticUnlockEnabled()) {
-                    // Reuse the existing 500 ms status poll so a new wake ticket
+                    // Reuse the existing status poll so a new wake ticket
                     // does not wait for a separate automatic-unlock timer.
                     SensitiveBytes startRequest;
                     Packet startReply;
@@ -205,6 +206,8 @@ struct ApprovalWatch final {
                         }
                     }
                 }
+                const auto pollInterval = unlock_windows::credential_provider::approvalPollInterval(
+                    latestStatus ? latestStatus->stage : AuthenticationStage::idle);
                 {
                     std::lock_guard lock(mutex);
                     failure = latest;
@@ -219,7 +222,7 @@ struct ApprovalWatch final {
                     logAutoSubmitError(L"phone status PostMessage", HRESULT_FROM_WIN32(GetLastError()));
                     return;
                 }
-                const DWORD waited = WaitForSingleObject(stop, 500);
+                const DWORD waited = WaitForSingleObject(stop, pollInterval);
                 if (waited == WAIT_OBJECT_0) return;
                 if (waited != WAIT_TIMEOUT) {
                     logAutoSubmitError(L"approval wait", HRESULT_FROM_WIN32(GetLastError()));

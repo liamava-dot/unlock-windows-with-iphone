@@ -96,13 +96,16 @@ private:
 };
 }
 
+enum class RssiScanMode { passive, active };
+
 class RssiSampler final {
 public:
-    explicit RssiSampler(std::function<void(const std::string&)> report = {}) : reporter_(std::move(report)) {}
+    explicit RssiSampler(std::function<void(const std::string&)> report = {}, RssiScanMode mode = RssiScanMode::passive)
+        : reporter_(std::move(report)), mode_(mode) {}
     ~RssiSampler();
     RssiSampler(const RssiSampler&) = delete;
     RssiSampler& operator=(const RssiSampler&) = delete;
-    // Start passive scanning while a locked session is eligible. No request
+    // Start scanning while a locked session is eligible. No request
     // evidence is collected until beginRequest establishes its time boundary.
     void startBackground(ConnectionTarget target);
     void beginRequest(ConnectionTarget target, std::uint64_t started,
@@ -119,5 +122,6 @@ private:
     struct State;
     std::shared_ptr<State> state_;
     std::function<void(const std::string&)> reporter_;
+    RssiScanMode mode_;
 };
 }

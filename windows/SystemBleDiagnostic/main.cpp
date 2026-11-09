@@ -102,15 +102,17 @@ struct Run final {
     void invalidate(const std::wstring& reason) { invalid = true; log->write(L"INVALIDATED: " + reason); }
 };
 
-IAsyncAction probe(const std::shared_ptr<Run> run, std::wstring target, int threshold) {
+IAsyncAction probe(const std::shared_ptr<Run> run, std::wstring target, int threshold, RssiScanMode mode) {
     co_await resume_background();
     const auto cancellation = co_await get_cancellation_token();
+    const auto report = [run](const std::string& message) { run->log->write(std::wstring(winrt::to_hstring(message))); };
+    RssiSampler sampler(report, mode);
+    const std::wstring modeName = mode == RssiScanMode::active ? L"active" : L"passive";
+    run->log->write(L"SCAN comparison mode=" + modeName + L"; requestStartedMs=" + std::to_wstring(run->started));
     try {
         const auto ble = uniqueEndpoint(pairedEndpoints().get(), hstring(target));
         run->log->write(L"BEGIN shared system BLE verification; selected BLE endpoint; threshold=" + std::to_wstring(threshold));
-        const auto report = [run](const std::string& message) { run->log->write(std::wstring(winrt::to_hstring(message))); };
         Session session(std::wstring(ble.Id()), report);
-        RssiSampler sampler;
         session.beginRequest(run->started, [run, cancellation] {
             return !run->invalid && !cancellation() && generation.load() == run->ticket &&
                 WTSGetActiveConsoleSessionId() == consoleSession.load() && !run->log->failed;
@@ -127,7 +129,13 @@ IAsyncAction probe(const std::shared_ptr<Run> run, std::wstring target, int thre
             L"Evidence expired before diagnostic completion");
         run->passed = true;
         run->log->write(L"PASS: diagnostic evidence only; no credential or Windows unlock was requested");
-    } catch (...) { run->log->write(L"FAIL: " + exceptionText()); run->invalid = true; }
+    } catch (...) {
+        run->log->write(L"FAIL: " + exceptionText());
+        report(sampler.diagnostics());
+        run->invalid = true;
+    }
+    run->log->write(L"SCAN result mode=" + modeName + L"; elapsedMs=" +
+        std::to_wstring(GetTickCount64() - run->started) + L"; passed=" + std::to_wstring(run->passed.load()));
 }
 void reportState(DWORD state, DWORD error = NO_ERROR) {
     std::lock_guard lock(statusMutex);
@@ -191,6 +199,7 @@ void recordConsole(const std::shared_ptr<Logger>& log) {
 
 std::wstring selectedEndpoint;
 int selectedThreshold = kDefaultThreshold;
+RssiScanMode selectedScanMode = RssiScanMode::passive;
 
 void WINAPI serviceMain(DWORD, wchar_t**) noexcept {
     std::shared_ptr<Logger> log;
@@ -208,7 +217,7 @@ void WINAPI serviceMain(DWORD, wchar_t**) noexcept {
         if (!stopRequested(kPreparationMs)) {
             const auto run = std::make_shared<Run>(log);
             recordConsole(log);
-            auto action = probe(run, selectedEndpoint, selectedThreshold);
+            auto action = probe(run, selectedEndpoint, selectedThreshold, selectedScanMode);
             bool interrupted = false;
             while (action.Status() == AsyncStatus::Started) {
                 if (stopRequested(100) ||
@@ -248,19 +257,31 @@ int wmain(int argc, wchar_t** argv) {
             listEndpoints();
             return 0;
         }
-        if ((argc != 3 && argc != 4) || std::wstring_view(argv[1]) != L"--service") {
+        if (argc < 3 || std::wstring_view(argv[1]) != L"--service") {
             std::wcerr << L"Usage: unlock_system_ble_diagnostic --list\n"
-                L"  SCM ImagePath: unlock_system_ble_diagnostic --service <paired-BLE-endpoint-ID> [RSSI-threshold]\n"
+                L"  SCM ImagePath: unlock_system_ble_diagnostic --service <paired-BLE-endpoint-ID> [RSSI-threshold] [--scan-mode passive|active]\n"
                 L"  Service name: " << kDiagnosticService << L"\n";
             return 2;
         }
         selectedEndpoint = argv[2];
         require(!selectedEndpoint.empty(), L"Paired BLE endpoint ID required.");
-        if (argc == 4) {
-            std::size_t consumed = 0;
-            selectedThreshold = std::stoi(argv[3], &consumed);
-            require(consumed == std::wstring_view(argv[3]).size() && selectedThreshold >= kMinimumThreshold &&
-                selectedThreshold <= kMaximumThreshold, L"RSSI threshold outside supported slider range.");
+        bool thresholdSeen = false, modeSeen = false;
+        for (int i = 3; i < argc; ++i) {
+            const std::wstring_view argument(argv[i]);
+            if (argument == L"--scan-mode") {
+                require(!modeSeen && i + 1 < argc, L"Specify --scan-mode once, followed by passive or active.");
+                const std::wstring_view value(argv[++i]);
+                require(value == L"passive" || value == L"active", L"Scan mode must be passive or active.");
+                selectedScanMode = value == L"active" ? RssiScanMode::active : RssiScanMode::passive;
+                modeSeen = true;
+            } else {
+                require(!thresholdSeen, L"Specify at most one RSSI threshold.");
+                std::size_t consumed = 0;
+                selectedThreshold = std::stoi(std::wstring(argument), &consumed);
+                require(consumed == argument.size() && validThreshold(selectedThreshold),
+                    L"RSSI threshold outside supported slider range.");
+                thresholdSeen = true;
+            }
         }
         stopEvent.attach(CreateEventW(nullptr, TRUE, FALSE, nullptr));
         check_bool(static_cast<bool>(stopEvent));

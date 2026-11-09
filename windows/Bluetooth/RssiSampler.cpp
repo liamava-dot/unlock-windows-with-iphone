@@ -41,6 +41,8 @@ void RssiSampler::startBackground(ConnectionTarget target) {
             state_->watcherStartedAt = startAt;
         }
         state_->watcher = BluetoothLEAdvertisementWatcher();
+        state_->watcher.ScanningMode(mode_ == RssiScanMode::active
+            ? BluetoothLEScanningMode::Active : BluetoothLEScanningMode::Passive);
         state_->received = state_->watcher.Received(auto_revoke, [weak](const auto&, const BluetoothLEAdvertisementReceivedEventArgs& args) {
             if (const auto self = weak.lock()) {
                 try {
@@ -103,7 +105,8 @@ void RssiSampler::startBackground(ConnectionTarget target) {
         });
         state_->watcher.Start();
         const auto readyAt = GetTickCount64();
-        if (reporter_) reporter_("RSSI passive watcher started; startElapsedMs=" + std::to_string(readyAt - startAt));
+        if (reporter_) reporter_(std::string("RSSI ") + (mode_ == RssiScanMode::active ? "active" : "passive") +
+            " watcher started; startElapsedMs=" + std::to_string(readyAt - startAt));
     } catch (...) {
         std::lock_guard lock(state_->mutex);
         state_->samples.fail();
