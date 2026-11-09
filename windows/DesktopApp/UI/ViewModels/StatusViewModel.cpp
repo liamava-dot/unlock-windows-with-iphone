@@ -272,8 +272,8 @@ hstring StatusViewModel::BindLabel() const { return BindingBusy() ? L"Binding\u2
 hstring StatusViewModel::BindAutomationName() const { return BindingBusy() ? L"Binding in progress" : L"Bind selected device"; }
 hstring StatusViewModel::AutomaticUnlockDescription() const {
     return automaticUnlockEnabled()
-        ? L"On: one fresh iPhone check after sleep/resume or a screen-off/on cycle while this session is locked. The laptop lid must be open. Someone with your paired iPhone nearby may unlock this PC without confirming on the phone."
-        : L"Off (default). Turn on to allow one iPhone check after a qualifying wake while this PC is locked. Administrator approval is required.";
+        ? L"Unlock your PC automatically when it wakes and your iPhone is nearby."
+        : L"Click Unlock on the sign-in screen to unlock your PC with your iPhone.";
 }
 hstring StatusViewModel::AutomaticUnlockLabel() const { return automaticUnlockEnabled() ? L"Turn off" : L"Turn on"; }
 hstring StatusViewModel::AutomaticUnlockAutomationName() const {
